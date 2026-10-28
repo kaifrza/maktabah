@@ -4,6 +4,11 @@ on:
   push:
     branches: [main, master]
   workflow_dispatch:
+    inputs:
+      debuggable:
+        description: "Keep WebView debugging (chrome://inspect) ON. Leave off for a production build."
+        type: boolean
+        default: false
 
 concurrency:
   group: build-apk-${{ github.ref }}
@@ -44,6 +49,9 @@ jobs:
           fi
           test -f www/index.html
           rm -rf www/supabase
+          mkdir -p tools
+          cp -f www/ci/optimize-web.py tools/ 2>/dev/null || echo "::warning::ci/optimize-web.py not in this zip - assets will not be bundled"
+          rm -rf www/ci www/.github
           echo "Build tag in this zip:"
           grep -n "BUILD_TAG =" www/js/features/download-manager.js
           echo "Native folder check:"
@@ -306,6 +314,26 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           RUN_NUMBER: ${{ github.run_number }}
+
+      - name: Optimize web assets (bundle + minify)
+        continue-on-error: true
+        run: |
+          test -f tools/optimize-web.py || { echo "::warning::no optimizer - skipping"; exit 0; }
+          npm i --no-save --omit=optional esbuild
+          python3 tools/optimize-web.py www
+          ls -la www/css www/js
+
+      - name: Production hardening (APK not debuggable)
+        if: ${{ github.event.inputs.debuggable != 'true' }}
+        run: |
+          python3 - <<'PY'
+          p = "android/app/build.gradle"
+          s = open(p).read()
+          if "KR_NOT_DEBUGGABLE" not in s:
+              s = s.replace("android {", "android {\n    buildTypes { debug { debuggable false } } // KR_NOT_DEBUGGABLE", 1)
+              open(p, "w").write(s)
+          PY
+          grep -n "KR_NOT_DEBUGGABLE" android/app/build.gradle
 
       - name: Sync
         run: npx cap sync android
