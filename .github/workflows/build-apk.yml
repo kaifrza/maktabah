@@ -86,11 +86,11 @@ jobs:
           echo "Vendor files:"
           ls -la www/vendor
 
-      - name: Bundle offline fonts (Noto Naskh Arabic + Inter)
+      - name: Bundle offline fonts (Noto Naskh Arabic + Plus Jakarta Sans)
         continue-on-error: true
         run: |
-          npm i --omit=optional @fontsource-variable/noto-naskh-arabic @fontsource-variable/inter
-          for p in noto-naskh-arabic inter; do
+          npm i --omit=optional @fontsource-variable/noto-naskh-arabic @fontsource-variable/plus-jakarta-sans
+          for p in noto-naskh-arabic plus-jakarta-sans; do
             mkdir -p www/vendor/fonts/$p
             cp -r node_modules/@fontsource-variable/$p/files www/vendor/fonts/$p/files
             cp node_modules/@fontsource-variable/$p/index.css www/vendor/fonts/$p/index.css
@@ -117,7 +117,7 @@ jobs:
           p = "www/index.html"
           s = open(p, encoding="utf-8").read()
           local = ('<link rel="stylesheet" href="./vendor/fonts/noto-naskh-arabic/index.css">\n  '
-                   '<link rel="stylesheet" href="./vendor/fonts/inter/index.css">')
+                   '<link rel="stylesheet" href="./vendor/fonts/plus-jakarta-sans/index.css">')
           s2 = re.sub(r'<link rel="stylesheet" href="https://fonts\.googleapis\.com[^>]*>', local, s)
           s2 = re.sub(r'\s*<link rel="preconnect" href="https://fonts\.(googleapis|gstatic)\.com"[^>]*>', '', s2)
           open(p, "w", encoding="utf-8").write(s2)
