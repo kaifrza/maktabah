@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       debuggable:
-        description: "Keep WebView debugging (chrome://inspect) ON. Leave off for a production build."
+        description: "Build a DEBUG apk with WebView debugging (chrome://inspect). Leave off for the production RELEASE apk."
         type: boolean
         default: false
 
@@ -33,6 +33,19 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+
+      - name: Choose build type
+        run: |
+          if [ "${{ github.event.inputs.debuggable }}" = "true" ]; then
+            echo "BUILD_TYPE=Debug" >> "$GITHUB_ENV"
+            echo "APK_PATH=android/app/build/outputs/apk/debug/app-debug.apk" >> "$GITHUB_ENV"
+            echo "APK_LABEL=debug" >> "$GITHUB_ENV"
+          else
+            echo "BUILD_TYPE=Release" >> "$GITHUB_ENV"
+            echo "APK_PATH=android/app/build/outputs/apk/release/app-release.apk" >> "$GITHUB_ENV"
+            echo "APK_LABEL=release" >> "$GITHUB_ENV"
+          fi
+          echo "Building: $(grep BUILD_TYPE "$GITHUB_ENV")"
 
       - name: Unzip app into www
         run: |
@@ -69,7 +82,7 @@ jobs:
           npm i @capacitor/core@7 @capacitor/cli@7 @capacitor/android@7
           cat > capacitor.config.json <<'EOF2'
           {
-            "appId": "com.kr.urdulibrary",
+            "appId": "com.maktabah.kaif",
             "appName": "Maktabah",
             "webDir": "www"
           }
@@ -129,7 +142,7 @@ jobs:
 
       - name: Native Android plugin (Downloads, reader, Open with)
         run: |
-          DEST=android/app/src/main/java/com/kr/urdulibrary
+          DEST=android/app/src/main/java/com/maktabah/kaif
           cp www/native/android/*.java "$DEST"/
           ls -la "$DEST"
           python3 - <<'PY'
@@ -246,6 +259,8 @@ jobs:
           else
             if [ -f keystore/debug.keystore ]; then
               KS="$GITHUB_WORKSPACE/keystore/debug.keystore"
+            elif [ -f keystore ]; then
+              KS="$GITHUB_WORKSPACE/keystore"
             else
               F=$(git ls-files | grep -iE '\.(keystore|jks)$' | head -n 1 || true)
               if [ -n "$F" ]; then KS="$GITHUB_WORKSPACE/$F"; fi
@@ -298,16 +313,23 @@ jobs:
           s2 = re.sub(r"versionCode\s+\d+", "versionCode " + os.environ["VERSION_CODE"], s, count=1)
           s2 = re.sub(r'versionName\s+"[^"]*"', 'versionName "1.0.' + n + '"', s2, count=1)
           if "KR_STABLE_SIGNING" not in s2:
-              blk = ("\n    // KR_STABLE_SIGNING\n    signingConfigs {\n        debug {\n"
-                     "            storeFile file('" + q(os.environ["KS_PATH"]) + "')\n"
+              cfg = ("            storeFile file('" + q(os.environ["KS_PATH"]) + "')\n"
                      "            storePassword '" + q(os.environ["KS_PASS"]) + "'\n"
                      "            keyAlias '" + q(os.environ["KS_ALIAS"]) + "'\n"
-                     "            keyPassword '" + q(os.environ["KS_KPASS"]) + "'\n        }\n    }\n")
+                     "            keyPassword '" + q(os.environ["KS_KPASS"]) + "'\n")
+              blk = ("\n    // KR_STABLE_SIGNING\n    signingConfigs {\n        debug {\n" + cfg + "        }\n"
+                     "        release {\n" + cfg + "        }\n    }\n"
+                     "    lint { checkReleaseBuilds false; abortOnError false }\n")
               s2 = s2.replace("android {", "android {" + blk, 1)
+          if "signingConfig signingConfigs.release" not in s2:
+              s3 = re.sub(r"(buildTypes\s*\{\s*release\s*\{)", r"\1\n            signingConfig signingConfigs.release", s2, count=1)
+              if s3 == s2:
+                  s3 = s2.replace("android {", "android {\n    buildTypes { release { signingConfig signingConfigs.release } }", 1)
+              s2 = s3
           open(p, "w").write(s2)
           print("build.gradle patched")
           PY
-          grep -n "versionCode\|versionName\|KR_STABLE_SIGNING\|storeFile" android/app/build.gradle
+          grep -n "versionCode\|versionName\|KR_STABLE_SIGNING\|storeFile\|signingConfig" android/app/build.gradle
         env:
           DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -323,18 +345,6 @@ jobs:
           python3 tools/optimize-web.py www
           ls -la www/css www/js
 
-      - name: Production hardening (APK not debuggable)
-        if: ${{ github.event.inputs.debuggable != 'true' }}
-        run: |
-          python3 - <<'PY'
-          p = "android/app/build.gradle"
-          s = open(p).read()
-          if "KR_NOT_DEBUGGABLE" not in s:
-              s = s.replace("android {", "android {\n    buildTypes { debug { debuggable false } } // KR_NOT_DEBUGGABLE", 1)
-              open(p, "w").write(s)
-          PY
-          grep -n "KR_NOT_DEBUGGABLE" android/app/build.gradle
-
       - name: Sync
         run: npx cap sync android
 
@@ -343,7 +353,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          ./gradlew assembleDebug 2>&1 | tee ../build1.log
+          ./gradlew assemble$BUILD_TYPE 2>&1 | tee ../build1.log
           RC=${PIPESTATUS[0]}
           set -e
           if [ "$RC" -eq 0 ]; then exit 0; fi
@@ -353,18 +363,18 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           grep -E "error:|\.java:[0-9]+|What went wrong|Could not|not found|FAILED" ../build1.log | head -60 >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          rm -f app/src/main/java/com/kr/urdulibrary/MuPdfView.java app/src/main/java/com/kr/urdulibrary/MuReaderActivity.java app/src/main/java/com/kr/urdulibrary/MuDock.java
+          rm -f app/src/main/java/com/maktabah/kaif/MuPdfView.java app/src/main/java/com/maktabah/kaif/MuReaderActivity.java app/src/main/java/com/maktabah/kaif/MuDock.java
           python3 -c "import re;p='app/build.gradle';s=open(p).read();s=re.sub(r'\n\s*implementation \"com\.artifex\.mupdf:fitz:[^\"]*\"','',s);open(p,'w').write(s);m='app/src/main/AndroidManifest.xml';t=open(m).read();t=re.sub(r'\s*<activity android:name=\"\.MuReaderActivity\"[^>]*/>','',t);open(m,'w').write(t)"
-          ./gradlew assembleDebug
+          ./gradlew assemble$BUILD_TYPE
 
       - name: Show APK signature
         run: |
           APKSIGNER=$(ls "${ANDROID_HOME:-$ANDROID_SDK_ROOT}"/build-tools/*/apksigner | sort -V | tail -n 1)
-          OUT=$("$APKSIGNER" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep -i "SHA-256" | head -n 1)
+          OUT=$("$APKSIGNER" verify --print-certs "$APK_PATH" | grep -i "SHA-256" | head -n 1)
           APK_SHA=$(echo "$OUT" | sed 's/.*: *//' | tr -d ': ' | tr 'A-Z' 'a-z')
           echo "$OUT"
           {
-            echo "## APK signature (must be the same on every build)"
+            echo "## APK signature (must be the same on every build) - $APK_LABEL build"
             echo "$OUT"
             echo ""
             echo "Keystore: $KS_SRC"
@@ -378,5 +388,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           if-no-files-found: error
-          name: Maktabah-APK-${{ github.run_number }}
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: Maktabah-APK-${{ github.run_number }}-${{ env.APK_LABEL }}
+          path: ${{ env.APK_PATH }}
