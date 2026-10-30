@@ -72,7 +72,7 @@ jobs:
           test -f www/native/android/MainActivity.java
           test -f www/native/android/open-with-filter.xml
           test -f www/js/features/library-screen.js
-          for f in MuReaderActivity MuPdfView MuAnnot MuAnnotStore MuInk MuSnap MuDock MuEraser; do
+          for f in MuReaderActivity MuPdfView MuAnnot MuAnnotStore MuInk MuSnap MuDock MuEraser MuMultiActivity; do
             test -f www/native/android/$f.java || echo "::warning::$f.java missing - the build will use the pdf.js reader"
           done
 
@@ -148,6 +148,7 @@ jobs:
           mkdir -p android/app/src/main/assets/fonts
           cp www/assets/fonts/NotoNastaliqUrdu-Regular.ttf android/app/src/main/assets/fonts/
           ls -la android/app/src/main/assets/fonts
+          cp -r www/native/android/res/. android/app/src/main/res/
           ls -la "$DEST"
           python3 - <<'PY'
           p = "android/app/src/main/AndroidManifest.xml"
@@ -155,6 +156,17 @@ jobs:
           f = open("www/native/android/open-with-filter.xml").read()
           if "application/pdf" not in s:
               s = s.replace("</activity>", f + "        </activity>", 1)
+          if "MuMultiActivity" not in s:
+              multi = ('        <activity android:name=".MuMultiActivity" android:exported="false"'
+                       ' android:launchMode="singleTask" android:taskAffinity="com.maktabah.kaif.multi"'
+                       ' android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode"'
+                       ' android:windowSoftInputMode="adjustResize"'
+                       ' android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />\n'
+                       '        <receiver android:name=".KRMultiWidget" android:exported="false">\n'
+                       '            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>\n'
+                       '            <meta-data android:name="android.appwidget.provider" android:resource="@xml/kr_multi_widget_info" />\n'
+                       '        </receiver>\n')
+              s = s.replace("</application>", multi + "    </application>", 1)
           if "MANAGE_EXTERNAL_STORAGE" not in s:
               perms = (
                   '    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />\n'
@@ -367,8 +379,8 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           grep -E "error:|\.java:[0-9]+|What went wrong|Could not|not found|FAILED" ../build1.log | head -60 >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          rm -f app/src/main/java/com/maktabah/kaif/MuPdfView.java app/src/main/java/com/maktabah/kaif/MuReaderActivity.java app/src/main/java/com/maktabah/kaif/MuDock.java
-          python3 -c "import re;p='app/build.gradle';s=open(p).read();s=re.sub(r'\n\s*implementation \"com\.artifex\.mupdf:fitz:[^\"]*\"','',s);open(p,'w').write(s);m='app/src/main/AndroidManifest.xml';t=open(m).read();t=re.sub(r'\s*<activity android:name=\"\.MuReaderActivity\"[^>]*/>','',t);open(m,'w').write(t)"
+          rm -f app/src/main/java/com/maktabah/kaif/MuPdfView.java app/src/main/java/com/maktabah/kaif/MuReaderActivity.java app/src/main/java/com/maktabah/kaif/MuDock.java app/src/main/java/com/maktabah/kaif/MuMultiActivity.java
+          python3 -c "import re;p='app/build.gradle';s=open(p).read();s=re.sub(r'\n\s*implementation \"com\.artifex\.mupdf:fitz:[^\"]*\"','',s);open(p,'w').write(s);m='app/src/main/AndroidManifest.xml';t=open(m).read();t=re.sub(r'\s*<activity android:name=\"\.Mu(Reader|Multi)Activity\"[^>]*/>','',t);open(m,'w').write(t)"
           ./gradlew assemble$BUILD_TYPE
 
       - name: Show APK signature
