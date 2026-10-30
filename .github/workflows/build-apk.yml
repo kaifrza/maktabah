@@ -104,6 +104,7 @@ jobs:
         run: |
           npm i --omit=optional @fontsource-variable/noto-naskh-arabic @fontsource-variable/plus-jakarta-sans
           for p in noto-naskh-arabic plus-jakarta-sans; do
+            [ -d node_modules/@fontsource-variable/$p ] || continue
             mkdir -p www/vendor/fonts/$p
             cp -r node_modules/@fontsource-variable/$p/files www/vendor/fonts/$p/files
             cp node_modules/@fontsource-variable/$p/index.css www/vendor/fonts/$p/index.css
@@ -126,12 +127,12 @@ jobs:
               print(css, "kept", sorted(used))
           PY
           python3 - <<'PY'
-          import re
+          import re, os
           p = "www/index.html"
           s = open(p, encoding="utf-8").read()
           local = ('<link rel="stylesheet" href="./vendor/fonts/noto-naskh-arabic/index.css">\n  '
                    '<link rel="stylesheet" href="./vendor/fonts/plus-jakarta-sans/index.css">')
-          s2 = re.sub(r'<link rel="stylesheet" href="https://fonts\.googleapis\.com[^>]*>', local, s)
+          s2 = re.sub(r'<link rel="stylesheet" href="https://fonts\.googleapis\.com[^>]*>', lambda m: local, s)
           s2 = re.sub(r'\s*<link rel="preconnect" href="https://fonts\.(googleapis|gstatic)\.com"[^>]*>', '', s2)
           open(p, "w", encoding="utf-8").write(s2)
           print("fonts link swapped:", s2 != s)
@@ -144,6 +145,9 @@ jobs:
         run: |
           DEST=android/app/src/main/java/com/maktabah/kaif
           cp www/native/android/*.java "$DEST"/
+          mkdir -p android/app/src/main/assets/fonts
+          cp www/assets/fonts/NotoNastaliqUrdu-Regular.ttf android/app/src/main/assets/fonts/
+          ls -la android/app/src/main/assets/fonts
           ls -la "$DEST"
           python3 - <<'PY'
           p = "android/app/src/main/AndroidManifest.xml"
