@@ -73,7 +73,7 @@ jobs:
           test -f www/native/android/open-with-filter.xml
           test -f www/js/features/library-screen.js
           for f in MuReaderActivity MuPdfView MuAnnot MuAnnotStore MuInk MuSnap MuDock MuEraser MuMultiActivity; do
-            test -f www/native/android/$f.java || echo "::warning::$f.java missing - the build will use the pdf.js reader"
+            test -f www/native/android/$f.java || { echo "::error::$f.java missing - the native reader is required"; exit 1; }
           done
 
       - name: Capacitor setup
@@ -195,13 +195,27 @@ jobs:
 
       - name: MuPDF native reader (dependency + activity)
         run: |
-          META=$(curl -fsSL https://maven.ghostscript.com/com/artifex/mupdf/fitz/maven-metadata.xml || true)
+          META=$(curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors https://maven.ghostscript.com/com/artifex/mupdf/fitz/maven-metadata.xml || true)
           VER=$(echo "$META" | grep -o '<version>1\.24\.[0-9]*</version>' | sed 's/<[^>]*>//g' | sort -V | tail -1)
           if [ -z "$VER" ]; then VER=1.24.10; fi
           echo "Using MuPDF fitz $VER"
           echo "$VER" > mupdf-version.txt
+          mkdir -p android/app/libs
+          AAR=android/app/libs/fitz-$VER.aar
+          for i in 1 2 3 4; do
+            if curl -fsSL --retry 6 --retry-delay 8 --retry-all-errors --connect-timeout 40 --max-time 420 -o "$AAR" "https://maven.ghostscript.com/com/artifex/mupdf/fitz/$VER/fitz-$VER.aar" && unzip -tq "$AAR" >/dev/null 2>&1; then
+              echo "MuPDF AAR downloaded: $(ls -la "$AAR")"; break
+            fi
+            rm -f "$AAR"; echo "MuPDF download attempt $i failed"; sleep 20
+          done
+          {
+            echo "org.gradle.internal.http.connectionTimeout=180000"
+            echo "org.gradle.internal.http.socketTimeout=180000"
+            echo "org.gradle.internal.repository.max.tentatives=8"
+            echo "org.gradle.internal.repository.initial.backoff=2000"
+          } >> android/gradle.properties
           python3 - <<'PY'
-          import re
+          import re, os
           ver = open("mupdf-version.txt").read().strip()
           r = "android/build.gradle"
           rs = open(r).read()
@@ -211,10 +225,17 @@ jobs:
               open(r, "w").write(rs)
           p = "android/app/build.gradle"
           s = open(p).read()
-          dep = 'implementation "com.artifex.mupdf:fitz:%s"' % ver
-          if "com.artifex.mupdf:fitz" not in s:
+          local = os.path.exists("android/app/libs/fitz-%s.aar" % ver)
+          if local:
+              dep = "implementation(name: 'fitz-%s', ext: 'aar')" % ver
+              if "flatDir" not in s:
+                  s += "\nrepositories {\n    flatDir { dirs 'libs' }\n}\n"
+          else:
+              print("WARNING: using the online MuPDF dependency (download failed)")
+              dep = 'implementation "com.artifex.mupdf:fitz:%s"' % ver
+          if "fitz" not in s:
               s = s.replace("dependencies {", "dependencies {\n    " + dep, 1)
-              open(p, "w").write(s)
+          open(p, "w").write(s)
           m = "android/app/src/main/AndroidManifest.xml"
           t = open(m).read()
           act = ('        <activity android:name=".MuReaderActivity" android:exported="false"'
@@ -225,7 +246,7 @@ jobs:
               open(m, "w").write(t)
           PY
           grep -n "ghostscript" android/build.gradle
-          grep -n "fitz\|swiperefresh" android/app/build.gradle
+          grep -n "fitz\|swiperefresh\|flatDir" android/app/build.gradle
           grep -n "MuReaderActivity" android/app/src/main/AndroidManifest.xml
 
       - name: App icon
@@ -375,11 +396,30 @@ jobs:
             grep -E "error:|\.java:[0-9]+|What went wrong|Could not|not found|FAILED|AAPT|aapt" "$2" | head -60 >> "$GITHUB_STEP_SUMMARY" || true
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           }
-          set +e
-          ./gradlew assemble$BUILD_TYPE 2>&1 | tee ../build1.log
-          RC=${PIPESTATUS[0]}
-          set -e
-          if [ "$RC" -eq 0 ]; then exit 0; fi
+          NET='Could not download|Could not HEAD|Could not GET|Read timed out|Connect timed out|Connection reset|UnknownHost|Remote host terminated'
+          run_build() {
+            set +e
+            ./gradlew assemble$BUILD_TYPE 2>&1 | tee "$1"
+            local rc=${PIPESTATUS[0]}
+            set -e
+            return $rc
+          }
+          ok=0
+          for try in 1 2 3; do
+            if run_build ../build1.log; then ok=1; break; fi
+            if grep -qE "$NET" ../build1.log; then
+              echo "::warning::Network problem while downloading dependencies (try $try of 3) - retrying in 30s."
+              sleep 30
+            else
+              break
+            fi
+          done
+          if [ "$ok" -eq 1 ]; then exit 0; fi
+          if grep -qE "$NET" ../build1.log; then
+            summary "Build failed: a dependency could not be downloaded (network)" ../build1.log
+            echo "::error::A dependency could not be downloaded. Re-run the workflow."
+            exit 1
+          fi
 
           echo "::warning::Build FAILED - retrying WITHOUT multi window (the MuPDF reader is kept)."
           summary "Multi window removed: the full build failed" ../build1.log
@@ -400,17 +440,22 @@ jobs:
           x = re.sub(r'\s*<receiver android:name="\.KRMultiWidget".*?</receiver>', "", x, flags=re.S)
           open(m, "w").write(x)
           PY
-          set +e
-          ./gradlew assemble$BUILD_TYPE 2>&1 | tee ../build2.log
-          RC=${PIPESTATUS[0]}
-          set -e
-          if [ "$RC" -eq 0 ]; then exit 0; fi
+          if ! run_build ../build2.log; then
+            summary "Build FAILED (the native MuPDF reader is required, so no APK was made)" ../build2.log
+            exit 1
+          fi
 
-          echo "::warning::Build with the MuPDF reader FAILED - rebuilding WITHOUT it (the pdf.js reader will be used)."
-          summary "MuPDF build failed - APK was rebuilt without the MuPDF reader" ../build2.log
-          rm -f app/src/main/java/com/maktabah/kaif/MuPdfView.java app/src/main/java/com/maktabah/kaif/MuReaderActivity.java app/src/main/java/com/maktabah/kaif/MuDock.java
-          python3 -c "import re;p='app/build.gradle';s=open(p).read();s=re.sub(r'\n\s*implementation \"com\.artifex\.mupdf:fitz:[^\"]*\"','',s);open(p,'w').write(s);m='app/src/main/AndroidManifest.xml';t=open(m).read();t=re.sub(r'\s*<activity android:name=\"\.MuReaderActivity\"[^>]*/>','',t);open(m,'w').write(t)"
-          ./gradlew assemble$BUILD_TYPE
+      - name: Verify the native reader is inside the APK
+        run: |
+          test -f "$APK_PATH" || { echo "::error::APK not found"; exit 1; }
+          N1=$(unzip -l "$APK_PATH" | grep -ci "mupdf" || true)
+          N2=$(unzip -p "$APK_PATH" 'classes*.dex' | grep -ac "MuReaderActivity" || true)
+          N3=$(unzip -p "$APK_PATH" 'classes*.dex' | grep -ac "MuMultiActivity" || true)
+          echo "mupdf files: $N1, reader class: $N2, multi window class: $N3"
+          [ "${N1:-0}" -gt 0 ] || { echo "::error::MuPDF native library is missing from the APK - build rejected."; exit 1; }
+          [ "${N2:-0}" -gt 0 ] || { echo "::error::MuReaderActivity is missing from the APK - build rejected."; exit 1; }
+          [ "${N3:-0}" -gt 0 ] || echo "::warning::Multi window is NOT in this APK (it failed to compile; see the run summary)."
+          ls -la "$APK_PATH"
 
       - name: Show APK signature
         run: |
