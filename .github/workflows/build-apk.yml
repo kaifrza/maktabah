@@ -146,7 +146,7 @@ jobs:
           DEST=android/app/src/main/java/com/maktabah/kaif
           cp www/native/android/*.java "$DEST"/
           mkdir -p android/app/src/main/assets/fonts
-          cp www/assets/fonts/NotoNastaliqUrdu-Regular.ttf android/app/src/main/assets/fonts/
+          cp www/assets/fonts/NotoNastaliqUrdu-Regular.ttf www/assets/fonts/Amiri-Regular.ttf android/app/src/main/assets/fonts/
           ls -la android/app/src/main/assets/fonts
           cp -r www/native/android/res/. android/app/src/main/res/
           ls -la "$DEST"
@@ -368,19 +368,48 @@ jobs:
         working-directory: android
         shell: bash
         run: |
+          summary() {
+            echo "## $1" >> "$GITHUB_STEP_SUMMARY"
+            echo "Send these lines to Claude:" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            grep -E "error:|\.java:[0-9]+|What went wrong|Could not|not found|FAILED|AAPT|aapt" "$2" | head -60 >> "$GITHUB_STEP_SUMMARY" || true
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          }
           set +e
           ./gradlew assemble$BUILD_TYPE 2>&1 | tee ../build1.log
           RC=${PIPESTATUS[0]}
           set -e
           if [ "$RC" -eq 0 ]; then exit 0; fi
+
+          echo "::warning::Build FAILED - retrying WITHOUT multi window (the MuPDF reader is kept)."
+          summary "Multi window removed: the full build failed" ../build1.log
+          R=app/src/main/res
+          rm -f $R/layout/kr_multi_widget.xml $R/drawable/kr_widget_*.xml $R/xml/kr_multi_widget_info.xml $R/values/kr_widget.xml $R/values-night/kr_widget.xml
+          python3 - <<'PY'
+          import re, os
+          d = "app/src/main/java/com/maktabah/kaif/"
+          for f in ("MuMultiActivity.java", "MuMultiStore.java", "KRMultiWidget.java"):
+              if os.path.exists(d + f): os.remove(d + f)
+          p = d + "KRDownloaderPlugin.java"
+          t = open(p).read()
+          t = re.sub(r"    // MULTI-BEGIN.*?    // MULTI-END\n", "", t, flags=re.S)
+          open(p, "w").write(t)
+          m = "app/src/main/AndroidManifest.xml"
+          x = open(m).read()
+          x = re.sub(r'\s*<activity android:name="\.MuMultiActivity"[^>]*/>', "", x)
+          x = re.sub(r'\s*<receiver android:name="\.KRMultiWidget".*?</receiver>', "", x, flags=re.S)
+          open(m, "w").write(x)
+          PY
+          set +e
+          ./gradlew assemble$BUILD_TYPE 2>&1 | tee ../build2.log
+          RC=${PIPESTATUS[0]}
+          set -e
+          if [ "$RC" -eq 0 ]; then exit 0; fi
+
           echo "::warning::Build with the MuPDF reader FAILED - rebuilding WITHOUT it (the pdf.js reader will be used)."
-          echo "## MuPDF build failed - APK was rebuilt without the MuPDF reader" >> "$GITHUB_STEP_SUMMARY"
-          echo "Send these lines to Claude:" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          grep -E "error:|\.java:[0-9]+|What went wrong|Could not|not found|FAILED" ../build1.log | head -60 >> "$GITHUB_STEP_SUMMARY" || true
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          rm -f app/src/main/java/com/maktabah/kaif/MuPdfView.java app/src/main/java/com/maktabah/kaif/MuReaderActivity.java app/src/main/java/com/maktabah/kaif/MuDock.java app/src/main/java/com/maktabah/kaif/MuMultiActivity.java
-          python3 -c "import re;p='app/build.gradle';s=open(p).read();s=re.sub(r'\n\s*implementation \"com\.artifex\.mupdf:fitz:[^\"]*\"','',s);open(p,'w').write(s);m='app/src/main/AndroidManifest.xml';t=open(m).read();t=re.sub(r'\s*<activity android:name=\"\.Mu(Reader|Multi)Activity\"[^>]*/>','',t);open(m,'w').write(t)"
+          summary "MuPDF build failed - APK was rebuilt without the MuPDF reader" ../build2.log
+          rm -f app/src/main/java/com/maktabah/kaif/MuPdfView.java app/src/main/java/com/maktabah/kaif/MuReaderActivity.java app/src/main/java/com/maktabah/kaif/MuDock.java
+          python3 -c "import re;p='app/build.gradle';s=open(p).read();s=re.sub(r'\n\s*implementation \"com\.artifex\.mupdf:fitz:[^\"]*\"','',s);open(p,'w').write(s);m='app/src/main/AndroidManifest.xml';t=open(m).read();t=re.sub(r'\s*<activity android:name=\"\.MuReaderActivity\"[^>]*/>','',t);open(m,'w').write(t)"
           ./gradlew assemble$BUILD_TYPE
 
       - name: Show APK signature
